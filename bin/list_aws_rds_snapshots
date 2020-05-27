@@ -1,0 +1,52 @@
+#!/usr/bin/env python
+
+import argparse
+import sys
+import boto3
+
+from datetime import datetime, timedelta
+from dateutil import tz
+
+class AwsRds:
+  def __init__(self, aws_key, aws_secret, aws_region):
+    self.rds = self._aws_rds(aws_key, aws_secret, aws_region)
+
+  def find_old_snapshots(self, age):  # <--- This is the function you are looking for
+    old_snapshots = []
+    for snapshot in self._all_snapshots():
+      if self._is_snapshot_too_old(snapshot, age):
+        old_snapshots.append(snapshot['DBSnapshotArn'])
+    return old_snapshots
+
+  def _aws_rds(self, aws_key, aws_secret, aws_region):
+    boto3.setup_default_session(region_name = aws_region)
+    return boto3.client(
+      'rds',
+      aws_access_key_id=aws_key,
+      aws_secret_access_key=aws_secret
+    )
+
+  def _all_snapshots(self):
+    return self.rds.describe_db_snapshots()['DBSnapshots']
+
+  def _is_snapshot_too_old(self, snapshot, age):
+    return snapshot['SnapshotCreateTime'] < self._retention_datetime(age)
+
+  def _retention_datetime(self, age):
+    rd = datetime.utcnow() - timedelta(days = age)
+    return rd.replace(tzinfo=tz.gettz('UTC'))
+
+if __name__ == "__main__":
+  parser = argparse.ArgumentParser(description='Provide a list of AWS RDS backups')
+  parser.add_argument('-a','--age', help='Snapshot max allowed age (days)', required=False, default=7)
+  parser.add_argument('-r','--aws-region', help='AWS Region', required=True)
+  parser.add_argument('-k', '--aws-key', help='AWS Key', required=True)
+  parser.add_argument('-s', '--aws-secret', help='AWS Secret', required=True)
+  args = parser.parse_args()
+
+  old_snapshots = AwsRds(args.aws_key, args.aws_secret, args.aws_region).find_old_snapshots(args.age)
+  print "Sapshots older then %s days:" % args.age
+  if old_snapshots:
+    print(" - " + "\n - ".join(old_snapshots))
+  else:
+    print(" None found.")

@@ -1,0 +1,79 @@
+#!/usr/bin/env python
+
+import argparse
+import boto3
+import filecmp
+import json
+import os
+import sys
+import urllib
+import traceback
+
+from jinja2 import Template
+from shutil import copyfile
+from subprocess import check_call
+
+parser = argparse.ArgumentParser(description='Whitelist updater.')
+parser.add_argument('-c','--config', help='The location of the apache config', required=True)
+parser.add_argument('-t','--template',help='The location of the template', required=True)
+parser.add_argument('-w','--whitelist', help='The URL from which to load JSON whitelist', required=True)
+parser.add_argument('--aws-key', help='AWS Key (local use only)', required=False)
+parser.add_argument('--aws-secret', help='AWS Secret (local use only)', required=False)
+
+args = parser.parse_args()
+backup = args.config + '~'
+
+def aws_s3():
+  if args.aws_key and args.aws_secret:
+    return boto3.resource(
+      's3',
+      aws_access_key_id=args.aws_key,
+      aws_secret_access_key=args.aws_secret
+    )
+  else:
+    return boto3.resource('s3')
+
+def split_s3_url(url):
+  path = url[5:] if url.startswith('s3://') else url
+  return path.split('/', 1)
+
+def fetch_whitelist(url):
+  bucket, key = split_s3_url(url)
+  s3_object = aws_s3().Object(bucket, key)
+  whitelist_content = s3_object.get()['Body'].read()
+  return json.loads(whitelist_content)
+
+def apache_config(template, whitelist):
+  template = Template(open(template, 'r').read())
+  return template.render({
+    'whitelist_content': ', '.join('"{0}"'.format(i) for i in whitelist)
+  })
+
+def backup_config(config, backup):
+  if os.path.isfile(config):
+    copyfile(config, backup)
+
+def restore_config(backup, config):
+  if os.path.isfile(backup) and not filecmp.cmp(config, backup):
+    copyfile(backup, config)
+
+def writefile(file, content):
+  config = open(file, 'w')
+  config.write(content)
+  config.close
+
+def test_apache_config():
+  devnull = open(os.devnull, 'w')
+  check_call(['apachectl', '-t'], stdout=devnull, stderr=devnull)
+
+try:
+  whitelist = fetch_whitelist(args.whitelist)
+  backup_config(args.config, backup)
+  writefile(args.config, apache_config(args.template, whitelist))
+  test_apache_config()
+except:
+  restore_config(backup, args.config)
+  sys.exit(traceback.format_exc())
+finally:
+  if os.path.isfile(backup):
+    os.remove(backup)
